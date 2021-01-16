@@ -17,6 +17,7 @@ limitations under the License.
 package apply
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -251,4 +253,20 @@ func addResourceVersion(patch []byte, rv string) ([]byte, error) {
 	a.SetResourceVersion(rv)
 
 	return json.Marshal(patchMap)
+}
+
+func runDelete(namespace, name string, mapping *meta.RESTMapping, c dynamic.Interface, cascade bool, gracePeriod int, serverDryRun bool) error {
+	options := metav1.DeleteOptions{}
+	if gracePeriod >= 0 {
+		options = *metav1.NewDeleteOptions(int64(gracePeriod))
+	}
+	if serverDryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+	policy := metav1.DeletePropagationForeground
+	if !cascade {
+		policy = metav1.DeletePropagationOrphan
+	}
+	options.PropagationPolicy = &policy
+	return c.Resource(mapping.Resource).Namespace(namespace).Delete(context.TODO(), name, options)
 }

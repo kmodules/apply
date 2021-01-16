@@ -29,12 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/klog"
 	"k8s.io/kubectl/pkg/cmd/delete"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -47,9 +45,6 @@ import (
 
 // ApplyOptions defines flags and other configuration parameters for the `apply` command
 type ApplyOptions struct {
-	RecordFlags *genericclioptions.RecordFlags
-	Recorder    genericclioptions.Recorder
-
 	PrintFlags *genericclioptions.PrintFlags
 	ToPrinter  func(string) (printers.ResourcePrinter, error)
 
@@ -62,8 +57,6 @@ type ApplyOptions struct {
 	Selector        string
 	DryRunStrategy  cmdutil.DryRunStrategy
 	DryRunVerifier  *resource.DryRunVerifier
-	Prune           bool
-	PruneResources  []pruneResource
 	cmdBaseName     string
 	All             bool
 	Overwrite       bool
@@ -90,19 +83,6 @@ type ApplyOptions struct {
 	// not call the resource builder; only return the set objects.
 	objects       []*resource.Info
 	objectsCached bool
-
-	// Stores visited objects/namespaces for later use
-	// calculating the set of objects to prune.
-	VisitedUids       sets.String
-	VisitedNamespaces sets.String
-
-	// Function run after the objects are generated and
-	// stored in the "objects" field, but before the
-	// apply is run on these objects.
-	PreProcessorFn func() error
-	// Function run after all objects have been applied.
-	// The standard PostProcessorFn is "PrintAndPrunePostProcessor()".
-	PostProcessorFn func() error
 }
 
 var (
@@ -138,22 +118,16 @@ var (
 // NewApplyOptions creates new ApplyOptions for the `apply` command
 func NewApplyOptions(ioStreams genericclioptions.IOStreams) *ApplyOptions {
 	return &ApplyOptions{
-		RecordFlags: genericclioptions.NewRecordFlags(),
 		DeleteFlags: delete.NewDeleteFlags("that contains the configuration to apply"),
 		PrintFlags:  genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
 
 		Overwrite:    true,
 		OpenAPIPatch: true,
 
-		Recorder: genericclioptions.NoopRecorder{},
-
 		IOStreams: ioStreams,
 
 		objects:       []*resource.Info{},
 		objectsCached: false,
-
-		VisitedUids:       sets.NewString(),
-		VisitedNamespaces: sets.NewString(),
 	}
 }
 
@@ -172,20 +146,17 @@ func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions
 		Long:                  applyLong,
 		Example:               applyExample,
 		Run: func(cmd *cobra.Command, args []string) {
-			cmdutil.CheckErr(o.Complete(f, cmd))
+			cmdutil.CheckErr(o.CompleteFlags(f, cmd))
 			cmdutil.CheckErr(validateArgs(cmd, args))
-			cmdutil.CheckErr(validatePruneAll(o.Prune, o.All, o.Selector))
 			cmdutil.CheckErr(o.Run())
 		},
 	}
 
 	// bind flag structs
 	o.DeleteFlags.AddFlags(cmd)
-	o.RecordFlags.AddFlags(cmd)
 	o.PrintFlags.AddFlags(cmd)
 
 	cmd.Flags().BoolVar(&o.Overwrite, "overwrite", o.Overwrite, "Automatically resolve conflicts between the modified and live configuration by using values from the modified configuration")
-	cmd.Flags().BoolVar(&o.Prune, "prune", o.Prune, "Automatically delete resource objects, including the uninitialized ones, that do not appear in the configs and are created by either apply or create --save-config. Should be used with either -l or --all.")
 	cmdutil.AddValidateFlags(cmd)
 	cmd.Flags().StringVarP(&o.Selector, "selector", "l", o.Selector, "Selector (label query) to filter on, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2)")
 	cmd.Flags().BoolVar(&o.All, "all", o.All, "Select all resources in the namespace of the specified resource types.")
@@ -197,16 +168,11 @@ func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions
 	cmdutil.AddDryRunFlag(cmd)
 	cmdutil.AddServerSideApplyFlags(cmd)
 
-	// apply subcommands
-	cmd.AddCommand(NewCmdApplyViewLastApplied(f, ioStreams))
-	cmd.AddCommand(NewCmdApplySetLastApplied(f, ioStreams))
-	cmd.AddCommand(NewCmdApplyEditLastApplied(f, ioStreams))
-
 	return cmd
 }
 
-// Complete verifies if ApplyOptions are valid and without conflicts.
-func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
+// CompleteFlags verifies if ApplyOptions are valid and without conflicts.
+func (o *ApplyOptions) CompleteFlags(f cmdutil.Factory, cmd *cobra.Command) error {
 	var err error
 	o.ServerSideApply = cmdutil.GetServerSideApplyFlag(cmd)
 	o.ForceConflicts = cmdutil.GetForceConflictsFlag(cmd)
@@ -214,6 +180,18 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	o.FieldManager = cmdutil.GetFieldManagerFlag(cmd)
+
+	o.Validator, err = f.Validator(cmdutil.GetFlagBool(cmd, "validate"))
+	if err != nil {
+		return err
+	}
+	return o.Complete(f)
+}
+
+// Complete verifies if ApplyOptions are valid and without conflicts.
+func (o *ApplyOptions) Complete(f cmdutil.Factory) error {
+	var err error
 	o.DynamicClient, err = f.DynamicClient()
 	if err != nil {
 		return err
@@ -223,7 +201,6 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return err
 	}
 	o.DryRunVerifier = resource.NewDryRunVerifier(o.DynamicClient, discoveryClient)
-	o.FieldManager = cmdutil.GetFieldManagerFlag(cmd)
 
 	if o.ForceConflicts && !o.ServerSideApply {
 		return fmt.Errorf("--force-conflicts only works with --server-side")
@@ -233,14 +210,14 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return fmt.Errorf("--dry-run=client doesn't work with --server-side (did you mean --dry-run=server instead?)")
 	}
 
-	var deprecatedServerDryRunFlag = cmdutil.GetFlagBool(cmd, "server-dry-run")
-	if o.DryRunStrategy == cmdutil.DryRunClient && deprecatedServerDryRunFlag {
-		return fmt.Errorf("--dry-run=client and --server-dry-run can't be used together (did you mean --dry-run=server instead?)")
-	}
-
-	if o.DryRunStrategy == cmdutil.DryRunNone && deprecatedServerDryRunFlag {
-		o.DryRunStrategy = cmdutil.DryRunServer
-	}
+	//var deprecatedServerDryRunFlag = cmdutil.GetFlagBool(cmd, "server-dry-run")
+	//if o.DryRunStrategy == cmdutil.DryRunClient && deprecatedServerDryRunFlag {
+	//	return fmt.Errorf("--dry-run=client and --server-dry-run can't be used together (did you mean --dry-run=server instead?)")
+	//}
+	//
+	//if o.DryRunStrategy == cmdutil.DryRunNone && deprecatedServerDryRunFlag {
+	//	o.DryRunStrategy = cmdutil.DryRunServer
+	//}
 
 	// allow for a success message operation to be specified at print time
 	o.ToPrinter = func(operation string) (printers.ResourcePrinter, error) {
@@ -249,23 +226,13 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return o.PrintFlags.ToPrinter()
 	}
 
-	o.RecordFlags.Complete(cmd)
-	o.Recorder, err = o.RecordFlags.ToRecorder()
-	if err != nil {
-		return err
-	}
-
 	o.DeleteOptions = o.DeleteFlags.ToOptions(o.DynamicClient, o.IOStreams)
-	err = o.DeleteOptions.FilenameOptions.RequireFilenameOrKustomize()
-	if err != nil {
-		return err
-	}
+	//err = o.DeleteOptions.FilenameOptions.RequireFilenameOrKustomize()
+	//if err != nil {
+	//	return err
+	//}
 
 	o.OpenAPISchema, _ = f.OpenAPISchema()
-	o.Validator, err = f.Validator(cmdutil.GetFlagBool(cmd, "validate"))
-	if err != nil {
-		return err
-	}
 	o.Builder = f.NewBuilder()
 	o.Mapper, err = f.ToRESTMapper()
 	if err != nil {
@@ -277,31 +244,12 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return err
 	}
 
-	if o.Prune {
-		o.PruneResources, err = parsePruneResources(o.Mapper, o.PruneWhitelist)
-		if err != nil {
-			return err
-		}
-	}
-
-	o.PostProcessorFn = o.PrintAndPrunePostProcessor()
-
 	return nil
 }
 
 func validateArgs(cmd *cobra.Command, args []string) error {
 	if len(args) != 0 {
 		return cmdutil.UsageErrorf(cmd, "Unexpected args: %v", args)
-	}
-	return nil
-}
-
-func validatePruneAll(prune, all bool, selector string) error {
-	if all && len(selector) > 0 {
-		return fmt.Errorf("cannot set --all and --selector at the same time")
-	}
-	if prune && !all && selector == "" {
-		return fmt.Errorf("all resources selected for prune without explicitly passing --all. To prune all resources, pass the --all flag. If you did not mean to prune all resources, specify a label selector")
 	}
 	return nil
 }
@@ -351,19 +299,6 @@ func (o *ApplyOptions) SetObjects(infos []*resource.Info) {
 
 // Run executes the `apply` command.
 func (o *ApplyOptions) Run() error {
-
-	if o.PreProcessorFn != nil {
-		klog.V(4).Infof("Running apply pre-processor function")
-		if err := o.PreProcessorFn(); err != nil {
-			return err
-		}
-	}
-
-	// Enforce CLI specified namespace on server request.
-	if o.EnforceNamespace {
-		o.VisitedNamespaces.Insert(o.Namespace)
-	}
-
 	// Generates the objects using the resource builder if they have not
 	// already been stored by calling "SetObjects()" in the pre-processor.
 	errs := []error{}
@@ -376,7 +311,7 @@ func (o *ApplyOptions) Run() error {
 	}
 	// Iterate through all objects, applying each one.
 	for _, info := range infos {
-		if err := o.applyOneObject(info); err != nil {
+		if err := o.ApplyOneObject(info); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -389,23 +324,10 @@ func (o *ApplyOptions) Run() error {
 		return utilerrors.NewAggregate(errs)
 	}
 
-	if o.PostProcessorFn != nil {
-		klog.V(4).Infof("Running apply post-processor function")
-		if err := o.PostProcessorFn(); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
-	o.MarkNamespaceVisited(info)
-
-	if err := o.Recorder.Record(info.Object); err != nil {
-		klog.V(4).Infof("error recording current command: %v", err)
-	}
-
+func (o *ApplyOptions) ApplyOneObject(info *resource.Info) error {
 	if o.ServerSideApply {
 		// Send the full object to be applied on the server side.
 		data, err := runtime.Encode(unstructured.UnstructuredJSONScheme, info.Object)
@@ -454,10 +376,6 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 		}
 
 		info.Refresh(obj, true)
-
-		if err := o.MarkObjectVisited(info); err != nil {
-			return err
-		}
 
 		if o.shouldPrintObject() {
 			return nil
@@ -509,10 +427,6 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 			info.Refresh(obj, true)
 		}
 
-		if err := o.MarkObjectVisited(info); err != nil {
-			return err
-		}
-
 		if o.shouldPrintObject() {
 			return nil
 		}
@@ -525,10 +439,6 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 			return err
 		}
 		return nil
-	}
-
-	if err := o.MarkObjectVisited(info); err != nil {
-		return err
 	}
 
 	if o.DryRunStrategy != cmdutil.DryRunClient {
@@ -585,88 +495,4 @@ func (o *ApplyOptions) shouldPrintObject() bool {
 		shouldPrint = true
 	}
 	return shouldPrint
-}
-
-func (o *ApplyOptions) printObjects() error {
-
-	if !o.shouldPrintObject() {
-		return nil
-	}
-
-	infos, err := o.GetObjects()
-	if err != nil {
-		return err
-	}
-
-	if len(infos) > 0 {
-		printer, err := o.ToPrinter("")
-		if err != nil {
-			return err
-		}
-
-		objToPrint := infos[0].Object
-		if len(infos) > 1 {
-			objs := []runtime.Object{}
-			for _, info := range infos {
-				objs = append(objs, info.Object)
-			}
-			list := &corev1.List{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "List",
-					APIVersion: "v1",
-				},
-				ListMeta: metav1.ListMeta{},
-			}
-			if err := meta.SetList(list, objs); err != nil {
-				return err
-			}
-
-			objToPrint = list
-		}
-		if err := printer.PrintObj(objToPrint, o.Out); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// MarkNamespaceVisited keeps track of which namespaces the applied
-// objects belong to. Used for pruning.
-func (o *ApplyOptions) MarkNamespaceVisited(info *resource.Info) {
-	if info.Namespaced() {
-		o.VisitedNamespaces.Insert(info.Namespace)
-	}
-}
-
-// MarkNamespaceVisited keeps track of UIDs of the applied
-// objects. Used for pruning.
-func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
-	metadata, err := meta.Accessor(info.Object)
-	if err != nil {
-		return err
-	}
-	o.VisitedUids.Insert(string(metadata.GetUID()))
-	return nil
-}
-
-// PrintAndPrune returns a function which meets the PostProcessorFn
-// function signature. This returned function prints all the
-// objects as a list (if configured for that), and prunes the
-// objects not applied. The returned function is the standard
-// apply post processor.
-func (o *ApplyOptions) PrintAndPrunePostProcessor() func() error {
-
-	return func() error {
-		if err := o.printObjects(); err != nil {
-			return err
-		}
-
-		if o.Prune {
-			p := newPruner(o)
-			return p.pruneAll(o)
-		}
-
-		return nil
-	}
 }
