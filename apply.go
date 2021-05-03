@@ -226,11 +226,10 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory) error {
 		return o.PrintFlags.ToPrinter()
 	}
 
-	o.DeleteOptions = o.DeleteFlags.ToOptions(o.DynamicClient, o.IOStreams)
-	//err = o.DeleteOptions.FilenameOptions.RequireFilenameOrKustomize()
-	//if err != nil {
-	//	return err
-	//}
+	o.DeleteOptions, err = o.DeleteFlags.ToOptions(o.DynamicClient, o.IOStreams)
+	if err != nil {
+		return err
+	}
 
 	o.OpenAPISchema, _ = f.OpenAPISchema()
 	o.Builder = f.NewBuilder()
