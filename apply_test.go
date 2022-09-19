@@ -131,7 +131,7 @@ func readBytesFromFile(t *testing.T, filename string) []byte {
 	}
 	defer file.Close()
 
-	data, err := ioutil.ReadAll(file)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func readAndAnnotateUnstructured(t *testing.T, filename string) (string, []byte)
 }
 
 func validatePatchApplication(t *testing.T, req *http.Request) {
-	patch, err := ioutil.ReadAll(req.Body)
+	patch, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +669,7 @@ func TestApplyEmptyPatch(t *testing.T) {
 				bodyRC := ioutil.NopCloser(bytes.NewReader(body))
 				return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 			case p == pathRC && m == "POST":
-				body, _ = ioutil.ReadAll(req.Body)
+				body, _ = io.ReadAll(req.Body)
 				verifyPost = true
 				bodyRC := ioutil.NopCloser(bytes.NewReader(body))
 				return &http.Response{StatusCode: http.StatusCreated, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
@@ -817,7 +817,7 @@ func TestApplyNULLPreservation(t *testing.T) {
 						body := ioutil.NopCloser(bytes.NewReader(deploymentBytes))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: body}, nil
 					case p == deploymentPath && m == "PATCH":
-						patch, err := ioutil.ReadAll(req.Body)
+						patch, err := io.ReadAll(req.Body)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -969,7 +969,7 @@ func TestUnstructuredIdempotentApply(t *testing.T) {
 						// In idempotent updates, kubectl will resolve to an empty patch and not send anything to the server
 						// Thus, if we reach this branch, kubectl is unnecessarily sending a patch.
 
-						patch, err := ioutil.ReadAll(req.Body)
+						patch, err := io.ReadAll(req.Body)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -1003,7 +1003,7 @@ func TestUnstructuredIdempotentApply(t *testing.T) {
 
 func checkPatchString(t *testing.T, req *http.Request) {
 	checkString := string(readBytesFromFile(t, filenameRCPatchTest))
-	patch, err := ioutil.ReadAll(req.Body)
+	patch, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
