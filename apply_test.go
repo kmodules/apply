@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,7 +47,7 @@ import (
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util/openapi"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 var (
@@ -129,7 +128,7 @@ func readBytesFromFile(t *testing.T, filename string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer file.Close() // nolint:errcheck
 
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -182,7 +181,7 @@ func readServiceFromFile(t *testing.T, filename string) *corev1.Service {
 	return &svc
 }
 
-func annotateRuntimeObject(t *testing.T, originalObj, currentObj runtime.Object, kind string) (string, []byte) {
+func annotateRuntimeObject(t *testing.T, originalObj, currentObj runtime.Object, _ string) (string, []byte) {
 	originalAccessor, err := meta.Accessor(originalObj)
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +220,7 @@ func annotateRuntimeObject(t *testing.T, originalObj, currentObj runtime.Object,
 	return currentAccessor.GetName(), current
 }
 
+// nolint: unparam
 func readAndAnnotateReplicationController(t *testing.T, filename string) (string, []byte) {
 	rc1 := readReplicationControllerFromFile(t, filename)
 	rc2 := readReplicationControllerFromFile(t, filename)
@@ -245,7 +245,7 @@ func validatePatchApplication(t *testing.T, req *http.Request) {
 		t.Fatal(err)
 	}
 
-	patchMap := map[string]interface{}{}
+	patchMap := map[string]any{}
 	if err := json.Unmarshal(patch, &patchMap); err != nil {
 		t.Fatal(err)
 	}
@@ -261,11 +261,11 @@ func validatePatchApplication(t *testing.T, req *http.Request) {
 	}
 }
 
-func walkMapPath(t *testing.T, start map[string]interface{}, path []string) map[string]interface{} {
+func walkMapPath(t *testing.T, start map[string]any, path []string) map[string]any {
 	finish := start
 	for i := 0; i < len(path); i++ {
 		var ok bool
-		finish, ok = finish[path[i]].(map[string]interface{})
+		finish, ok = finish[path[i]].(map[string]any)
 		if !ok {
 			t.Fatalf("key:%s of path:%v not found in map:%v", path[i], path, start)
 		}
@@ -293,9 +293,9 @@ func TestRunApplyPrintsValidObjectList(t *testing.T) {
 
 				switch p {
 				case pathCM + "/test0":
-					body = ioutil.NopCloser(bytes.NewReader(configMapList[0]))
+					body = io.NopCloser(bytes.NewReader(configMapList[0]))
 				case pathCM + "/test1":
-					body = ioutil.NopCloser(bytes.NewReader(configMapList[1]))
+					body = io.NopCloser(bytes.NewReader(configMapList[1]))
 				default:
 					t.Errorf("unexpected request to %s", p)
 				}
@@ -311,9 +311,9 @@ func TestRunApplyPrintsValidObjectList(t *testing.T) {
 
 	ioStreams, _, buf, _ := genericclioptions.NewTestIOStreams()
 	cmd := NewCmdApply("kubectl", tf, ioStreams)
-	cmd.Flags().Set("filename", filenameCM)
-	cmd.Flags().Set("output", "json")
-	cmd.Flags().Set("dry-run", "true")
+	_ = cmd.Flags().Set("filename", filenameCM)
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("dry-run", "true")
 	cmd.Run(cmd, []string{})
 
 	// ensure that returned list can be unmarshaled back into a configmap list
@@ -346,10 +346,10 @@ func TestApplyObjectWithoutAnnotation(t *testing.T) {
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == pathRC && m == "GET":
-				bodyRC := ioutil.NopCloser(bytes.NewReader(rcBytes))
+				bodyRC := io.NopCloser(bytes.NewReader(rcBytes))
 				return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 			case p == pathRC && m == "PATCH":
-				bodyRC := ioutil.NopCloser(bytes.NewReader(rcBytes))
+				bodyRC := io.NopCloser(bytes.NewReader(rcBytes))
 				return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -361,8 +361,8 @@ func TestApplyObjectWithoutAnnotation(t *testing.T) {
 
 	ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 	cmd := NewCmdApply("kubectl", tf, ioStreams)
-	cmd.Flags().Set("filename", filenameRC)
-	cmd.Flags().Set("output", "name")
+	_ = cmd.Flags().Set("filename", filenameRC)
+	_ = cmd.Flags().Set("output", "name")
 	cmd.Run(cmd, []string{})
 
 	// uses the name from the file, not the response
@@ -391,11 +391,11 @@ func TestApplyObject(t *testing.T) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == pathRC && m == "GET":
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case p == pathRC && m == "PATCH":
 						validatePatchApplication(t, req)
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -408,8 +408,8 @@ func TestApplyObject(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameRC)
-			cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("filename", filenameRC)
+			_ = cmd.Flags().Set("output", "name")
 			cmd.Run(cmd, []string{})
 
 			// uses the name from the file, not the response
@@ -439,11 +439,11 @@ func TestApplyPruneObjects(t *testing.T) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == pathRC && m == "GET":
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case p == pathRC && m == "PATCH":
 						validatePatchApplication(t, req)
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -456,11 +456,11 @@ func TestApplyPruneObjects(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameRC)
-			cmd.Flags().Set("prune", "true")
-			cmd.Flags().Set("namespace", "test")
-			cmd.Flags().Set("output", "yaml")
-			cmd.Flags().Set("all", "true")
+			_ = cmd.Flags().Set("filename", filenameRC)
+			_ = cmd.Flags().Set("prune", "true")
+			_ = cmd.Flags().Set("namespace", "test")
+			_ = cmd.Flags().Set("output", "yaml")
+			_ = cmd.Flags().Set("all", "true")
 			cmd.Run(cmd, []string{})
 
 			if !strings.Contains(buf.String(), "test-rc") {
@@ -504,11 +504,11 @@ func TestApplyObjectOutput(t *testing.T) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == pathRC && m == "GET":
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case p == pathRC && m == "PATCH":
 						validatePatchApplication(t, req)
-						bodyRC := ioutil.NopCloser(bytes.NewReader(postPatchData))
+						bodyRC := io.NopCloser(bytes.NewReader(postPatchData))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -521,8 +521,8 @@ func TestApplyObjectOutput(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameRC)
-			cmd.Flags().Set("output", "yaml")
+			_ = cmd.Flags().Set("filename", filenameRC)
+			_ = cmd.Flags().Set("output", "yaml")
 			cmd.Run(cmd, []string{})
 
 			if !strings.Contains(buf.String(), "test-rc") {
@@ -557,19 +557,19 @@ func TestApplyRetry(t *testing.T) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == pathRC && m == "GET":
 						getCount++
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case p == pathRC && m == "PATCH":
 						if firstPatch {
 							firstPatch = false
 							statusErr := apierrors.NewConflict(schema.GroupResource{Group: "", Resource: "rc"}, "test-rc", fmt.Errorf("the object has been modified. Please apply at first"))
 							bodyBytes, _ := json.Marshal(statusErr)
-							bodyErr := ioutil.NopCloser(bytes.NewReader(bodyBytes))
+							bodyErr := io.NopCloser(bytes.NewReader(bodyBytes))
 							return &http.Response{StatusCode: http.StatusConflict, Header: cmdtesting.DefaultHeader(), Body: bodyErr}, nil
 						}
 						retry = true
 						validatePatchApplication(t, req)
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -582,8 +582,8 @@ func TestApplyRetry(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameRC)
-			cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("filename", filenameRC)
+			_ = cmd.Flags().Set("output", "name")
 			cmd.Run(cmd, []string{})
 
 			if !retry || getCount != 2 {
@@ -615,11 +615,11 @@ func TestApplyNonExistObject(t *testing.T) {
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == "/api/v1/namespaces/test" && m == "GET":
-				return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
+				return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: io.NopCloser(bytes.NewReader(nil))}, nil
 			case p == pathNameRC && m == "GET":
-				return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
+				return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: io.NopCloser(bytes.NewReader(nil))}, nil
 			case p == pathRC && m == "POST":
-				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+				bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 				return &http.Response{StatusCode: http.StatusCreated, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -631,8 +631,8 @@ func TestApplyNonExistObject(t *testing.T) {
 
 	ioStreams, _, buf, _ := genericclioptions.NewTestIOStreams()
 	cmd := NewCmdApply("kubectl", tf, ioStreams)
-	cmd.Flags().Set("filename", filenameRC)
-	cmd.Flags().Set("output", "name")
+	_ = cmd.Flags().Set("filename", filenameRC)
+	_ = cmd.Flags().Set("output", "name")
 	cmd.Run(cmd, []string{})
 
 	// uses the name from the file, not the response
@@ -661,17 +661,17 @@ func TestApplyEmptyPatch(t *testing.T) {
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == "/api/v1/namespaces/test" && m == "GET":
-				return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
+				return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: io.NopCloser(bytes.NewReader(nil))}, nil
 			case p == pathNameRC && m == "GET":
 				if body == nil {
-					return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
+					return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: io.NopCloser(bytes.NewReader(nil))}, nil
 				}
-				bodyRC := ioutil.NopCloser(bytes.NewReader(body))
+				bodyRC := io.NopCloser(bytes.NewReader(body))
 				return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 			case p == pathRC && m == "POST":
 				body, _ = io.ReadAll(req.Body)
 				verifyPost = true
-				bodyRC := ioutil.NopCloser(bytes.NewReader(body))
+				bodyRC := io.NopCloser(bytes.NewReader(body))
 				return &http.Response{StatusCode: http.StatusCreated, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -684,8 +684,8 @@ func TestApplyEmptyPatch(t *testing.T) {
 	// 1. apply non exist object
 	ioStreams, _, buf, _ := genericclioptions.NewTestIOStreams()
 	cmd := NewCmdApply("kubectl", tf, ioStreams)
-	cmd.Flags().Set("filename", filenameRC)
-	cmd.Flags().Set("output", "name")
+	_ = cmd.Flags().Set("filename", filenameRC)
+	_ = cmd.Flags().Set("output", "name")
 	cmd.Run(cmd, []string{})
 
 	expectRC := "replicationcontroller/" + nameRC + "\n"
@@ -699,8 +699,8 @@ func TestApplyEmptyPatch(t *testing.T) {
 	// 2. test apply already exist object, will not send empty patch request
 	ioStreams, _, buf, _ = genericclioptions.NewTestIOStreams()
 	cmd = NewCmdApply("kubectl", tf, ioStreams)
-	cmd.Flags().Set("filename", filenameRC)
-	cmd.Flags().Set("output", "name")
+	_ = cmd.Flags().Set("filename", filenameRC)
+	_ = cmd.Flags().Set("output", "name")
 	cmd.Run(cmd, []string{})
 
 	if buf.String() != expectRC {
@@ -733,18 +733,18 @@ func testApplyMultipleObjects(t *testing.T, asList bool) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == pathRC && m == "GET":
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case p == pathRC && m == "PATCH":
 						validatePatchApplication(t, req)
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case p == pathSVC && m == "GET":
-						bodySVC := ioutil.NopCloser(bytes.NewReader(currentSVC))
+						bodySVC := io.NopCloser(bytes.NewReader(currentSVC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodySVC}, nil
 					case p == pathSVC && m == "PATCH":
 						validatePatchApplication(t, req)
-						bodySVC := ioutil.NopCloser(bytes.NewReader(currentSVC))
+						bodySVC := io.NopCloser(bytes.NewReader(currentSVC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodySVC}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -758,12 +758,12 @@ func testApplyMultipleObjects(t *testing.T, asList bool) {
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
 			if asList {
-				cmd.Flags().Set("filename", filenameRCSVC)
+				_ = cmd.Flags().Set("filename", filenameRCSVC)
 			} else {
-				cmd.Flags().Set("filename", filenameRC)
-				cmd.Flags().Set("filename", filenameSVC)
+				_ = cmd.Flags().Set("filename", filenameRC)
+				_ = cmd.Flags().Set("filename", filenameSVC)
 			}
-			cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("output", "name")
 
 			cmd.Run(cmd, []string{})
 
@@ -814,7 +814,7 @@ func TestApplyNULLPreservation(t *testing.T) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == deploymentPath && m == "GET":
-						body := ioutil.NopCloser(bytes.NewReader(deploymentBytes))
+						body := io.NopCloser(bytes.NewReader(deploymentBytes))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: body}, nil
 					case p == deploymentPath && m == "PATCH":
 						patch, err := io.ReadAll(req.Body)
@@ -822,7 +822,7 @@ func TestApplyNULLPreservation(t *testing.T) {
 							t.Fatal(err)
 						}
 
-						patchMap := map[string]interface{}{}
+						patchMap := map[string]any{}
 						if err := json.Unmarshal(patch, &patchMap); err != nil {
 							t.Fatal(err)
 						}
@@ -839,7 +839,7 @@ func TestApplyNULLPreservation(t *testing.T) {
 						// The real API server would had returned the patched object but Kubectl
 						// is ignoring the actual return object.
 						// TODO: Make this match actual server behavior by returning the patched object.
-						body := ioutil.NopCloser(bytes.NewReader(deploymentBytes))
+						body := io.NopCloser(bytes.NewReader(deploymentBytes))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: body}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -852,8 +852,8 @@ func TestApplyNULLPreservation(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameDeployObjClientside)
-			cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("filename", filenameDeployObjClientside)
+			_ = cmd.Flags().Set("output", "name")
 
 			cmd.Run(cmd, []string{})
 
@@ -889,7 +889,7 @@ func TestUnstructuredApply(t *testing.T) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == path && m == "GET":
-						body := ioutil.NopCloser(bytes.NewReader(curr))
+						body := io.NopCloser(bytes.NewReader(curr))
 						return &http.Response{
 							StatusCode: http.StatusOK,
 							Header:     cmdtesting.DefaultHeader(),
@@ -903,7 +903,7 @@ func TestUnstructuredApply(t *testing.T) {
 						validatePatchApplication(t, req)
 						verifiedPatch = true
 
-						body := ioutil.NopCloser(bytes.NewReader(curr))
+						body := io.NopCloser(bytes.NewReader(curr))
 						return &http.Response{
 							StatusCode: http.StatusOK,
 							Header:     cmdtesting.DefaultHeader(),
@@ -920,8 +920,8 @@ func TestUnstructuredApply(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameWidgetClientside)
-			cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("filename", filenameWidgetClientside)
+			_ = cmd.Flags().Set("output", "name")
 			cmd.Run(cmd, []string{})
 
 			expected := "widget.unit-test.test.com/" + name + "\n"
@@ -959,7 +959,7 @@ func TestUnstructuredIdempotentApply(t *testing.T) {
 				Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 					switch p, m := req.URL.Path, req.Method; {
 					case p == path && m == "GET":
-						body := ioutil.NopCloser(bytes.NewReader(serversideData))
+						body := io.NopCloser(bytes.NewReader(serversideData))
 						return &http.Response{
 							StatusCode: http.StatusOK,
 							Header:     cmdtesting.DefaultHeader(),
@@ -986,8 +986,8 @@ func TestUnstructuredIdempotentApply(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameWidgetClientside)
-			cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("filename", filenameWidgetClientside)
+			_ = cmd.Flags().Set("output", "name")
 			cmd.Run(cmd, []string{})
 
 			expected := "widget.unit-test.test.com/widget\n"
@@ -998,29 +998,6 @@ func TestUnstructuredIdempotentApply(t *testing.T) {
 				t.Fatalf("unexpected error output: %s", errBuf.String())
 			}
 		})
-	}
-}
-
-func checkPatchString(t *testing.T, req *http.Request) {
-	checkString := string(readBytesFromFile(t, filenameRCPatchTest))
-	patch, err := io.ReadAll(req.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	patchMap := map[string]interface{}{}
-	if err := json.Unmarshal(patch, &patchMap); err != nil {
-		t.Fatal(err)
-	}
-
-	annotationsMap := walkMapPath(t, patchMap, []string{"metadata", "annotations"})
-	if _, ok := annotationsMap[corev1.LastAppliedConfigAnnotation]; !ok {
-		t.Fatalf("patch does not contain annotation:\n%s\n", patch)
-	}
-
-	resultString := annotationsMap["kubectl.kubernetes.io/last-applied-configuration"]
-	if resultString != checkString {
-		t.Fatalf("patch annotation is not correct, expect:%s\n but got:%s\n", checkString, resultString)
 	}
 }
 
@@ -1055,27 +1032,27 @@ func TestForceApply(t *testing.T) {
 					case strings.HasSuffix(p, pathRC) && m == "GET":
 						if deleted {
 							counts["getNotFound"]++
-							return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: ioutil.NopCloser(bytes.NewReader([]byte{}))}, nil
+							return &http.Response{StatusCode: http.StatusNotFound, Header: cmdtesting.DefaultHeader(), Body: io.NopCloser(bytes.NewReader([]byte{}))}, nil
 						}
 						counts["getOk"]++
 						var bodyRC io.ReadCloser
 						if isScaledDownToZero {
 							rcObj := readReplicationControllerFromFile(t, filenameRC)
-							rcObj.Spec.Replicas = utilpointer.Int32Ptr(0)
+							rcObj.Spec.Replicas = ptr.To(int32(0))
 							rcBytes, err := runtime.Encode(codec, rcObj)
 							if err != nil {
 								t.Fatal(err)
 							}
-							bodyRC = ioutil.NopCloser(bytes.NewReader(rcBytes))
+							bodyRC = io.NopCloser(bytes.NewReader(rcBytes))
 						} else {
-							bodyRC = ioutil.NopCloser(bytes.NewReader(currentRC))
+							bodyRC = io.NopCloser(bytes.NewReader(currentRC))
 						}
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case strings.HasSuffix(p, pathRCList) && m == "GET":
 						counts["getList"]++
 						rcObj := readUnstructuredFromFile(t, filenameRC)
 						list := &unstructured.UnstructuredList{
-							Object: map[string]interface{}{
+							Object: map[string]any{
 								"apiVersion": "v1",
 								"kind":       "ReplicationControllerList",
 							},
@@ -1085,28 +1062,28 @@ func TestForceApply(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						bodyRCList := ioutil.NopCloser(bytes.NewReader(listBytes))
+						bodyRCList := io.NopCloser(bytes.NewReader(listBytes))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRCList}, nil
 					case strings.HasSuffix(p, pathRC) && m == "PATCH":
 						counts["patch"]++
 						if counts["patch"] <= 6 {
 							statusErr := apierrors.NewConflict(schema.GroupResource{Group: "", Resource: "rc"}, "test-rc", fmt.Errorf("the object has been modified. Please apply at first"))
 							bodyBytes, _ := json.Marshal(statusErr)
-							bodyErr := ioutil.NopCloser(bytes.NewReader(bodyBytes))
+							bodyErr := io.NopCloser(bytes.NewReader(bodyBytes))
 							return &http.Response{StatusCode: http.StatusConflict, Header: cmdtesting.DefaultHeader(), Body: bodyErr}, nil
 						}
 						t.Fatalf("unexpected request: %#v after %v tries\n%#v", req.URL, counts["patch"], req)
 						return nil, nil
 					case strings.HasSuffix(p, pathRC) && m == "PUT":
 						counts["put"]++
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						isScaledDownToZero = true
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					case strings.HasSuffix(p, pathRCList) && m == "POST":
 						counts["post"]++
 						deleted = false
 						isScaledDownToZero = false
-						bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+						bodyRC := io.NopCloser(bytes.NewReader(currentRC))
 						return &http.Response{StatusCode: http.StatusOK, Header: cmdtesting.DefaultHeader(), Body: bodyRC}, nil
 					default:
 						t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
@@ -1132,9 +1109,9 @@ func TestForceApply(t *testing.T) {
 
 			ioStreams, _, buf, errBuf := genericclioptions.NewTestIOStreams()
 			cmd := NewCmdApply("kubectl", tf, ioStreams)
-			cmd.Flags().Set("filename", filenameRC)
-			cmd.Flags().Set("output", "name")
-			cmd.Flags().Set("force", "true")
+			_ = cmd.Flags().Set("filename", filenameRC)
+			_ = cmd.Flags().Set("output", "name")
+			_ = cmd.Flags().Set("force", "true")
 			cmd.Run(cmd, []string{})
 
 			for method, exp := range expected {
