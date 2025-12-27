@@ -103,7 +103,10 @@ var (
 		kubectl delete pod foo --force
 
 		# Delete all pods
-		kubectl delete pods --all`))
+		kubectl delete pods --all
+
+		# Delete all pods only if the user confirms the deletion
+		kubectl delete pods --all --interactive`))
 )
 
 type DeleteOptions struct {
@@ -503,6 +506,10 @@ func (o *DeleteOptions) PrintObj(info *resource.Info) {
 		operation = "force deleted"
 	}
 
+	if info.Namespaced() {
+		operation = fmt.Sprintf("%s from %s namespace", operation, info.Namespace)
+	}
+
 	switch o.DryRunStrategy {
 	case cmdutil.DryRunClient:
 		operation = fmt.Sprintf("%s (dry run)", operation)
@@ -521,7 +528,7 @@ func (o *DeleteOptions) PrintObj(info *resource.Info) {
 }
 
 func (o *DeleteOptions) confirmation(infos []*resource.Info) bool {
-	fmt.Fprintf(o.Out, i18n.T("You are about to delete the following %d resource(s):\n"), len(infos))
+	fmt.Fprintf(o.Out, i18n.T("You are about to delete the following %d resource(s):\n"), len(infos)) //nolint:errcheck
 	for _, info := range infos {
 		groupKind := info.Mapping.GroupVersionKind
 		kindString := fmt.Sprintf("%s.%s", strings.ToLower(groupKind.Kind), groupKind.Group)
@@ -529,11 +536,11 @@ func (o *DeleteOptions) confirmation(infos []*resource.Info) bool {
 			kindString = strings.ToLower(groupKind.Kind)
 		}
 
-		fmt.Fprintf(o.Out, "%s/%s\n", kindString, info.Name)
+		fmt.Fprintf(o.Out, "%s/%s\n", kindString, info.Name) //nolint:errcheck
 	}
-	fmt.Fprintf(o.Out, i18n.T("Do you want to continue?")+" (y/n): ")
+	fmt.Fprint(o.Out, i18n.T("Do you want to continue?")+" (y/N): ") //nolint:errcheck
 	var input string
-	_, err := fmt.Fscan(o.In, &input)
+	_, err := fmt.Fscanln(o.In, &input)
 	if err != nil {
 		return false
 	}
